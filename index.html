@@ -1,0 +1,210 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#11101a">
+  <title>SoundLoop</title>
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <style>
+    :root{color-scheme:dark;--bg:#11101a;--text:#f5f1ff;--muted:#aaa5bd;--accent:#d4c0ff}
+    *{box-sizing:border-box}
+    html,body{margin:0;min-height:100%;background:var(--bg);color:var(--text);font:15px/1.45 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+    body{padding:12px 10px max(18px,env(safe-area-inset-bottom))}
+    .wrap{width:100%;max-width:560px;margin:0 auto}
+    .player{width:100%;overflow:hidden;border-radius:14px;background:#08070c}
+    .screen{position:relative;width:100%;min-height:150px;background:#08070c;display:grid;place-items:center;overflow:hidden;cursor:pointer;touch-action:manipulation}
+    video{display:none;width:100%;height:auto;max-height:78vh;object-fit:contain;background:#08070c}
+    .screen.has-media video{display:block}
+    .placeholder{width:100%;aspect-ratio:16/9;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;color:#c9c0df;background:radial-gradient(circle at 50% 40%,#46335e,#171421 65%);text-align:center;padding:20px}
+    .screen.has-media .placeholder{display:none}
+    .placeholder .glyph{font-size:36px}
+    .placeholder small{color:#b5acc9}
+    .play-overlay{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);width:68px;height:68px;border:0;border-radius:50%;display:grid;place-items:center;background:#171421c9;color:#fff;font-size:27px;cursor:pointer;backdrop-filter:blur(8px);box-shadow:0 4px 28px #0006;transition:opacity .16s,transform .16s}
+    .play-overlay:hover{transform:translate(-50%,-50%) scale(1.06)}
+    .play-overlay.hidden{opacity:0;pointer-events:none}
+    .play-overlay:disabled{opacity:.35;cursor:default}
+    .title{font-size:14px;font-weight:550;color:#e8e2f5;padding:10px 2px 0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-height:30px}
+    details{margin-top:18px;border-top:1px solid #373244;padding-top:10px}
+    summary{cursor:pointer;list-style:none;color:#c9c1d9;font-size:12px;padding:3px 0}
+    summary::-webkit-details-marker{display:none}
+    summary:after{content:'＋';float:right;color:var(--muted)}
+    details[open] summary:after{content:'−'}
+    .form{padding:12px 0 4px;display:grid;gap:11px}
+    .field{display:grid;gap:5px}
+    .field label{font-size:12px;color:#c8c0d8}
+    .field input{width:100%;min-width:0;background:#191724;border:1px solid #403a54;border-radius:9px;color:var(--text);padding:10px;font:inherit;font-size:13px;outline:none}
+    .field input:focus{border-color:var(--accent)}
+    .field input[type=file]{padding:7px}
+    .hint,.status{font-size:11px;color:var(--muted);margin:0}
+    .actions{display:flex;gap:8px;flex-wrap:wrap}
+    .secondary{border:1px solid #514969;background:#28243a;color:#e8ddff;border-radius:9px;padding:9px 12px;font-weight:600;cursor:pointer}
+    .status{min-height:16px}
+    @media(max-width:380px){body{padding:8px 7px max(14px,env(safe-area-inset-bottom))}.play-overlay{width:58px;height:58px;font-size:23px}}
+  </style>
+</head>
+<body>
+<div class="wrap">
+  <main>
+    <section class="player" aria-label="Музыкальный плеер">
+      <div class="screen" id="screen" aria-label="Нажми для воспроизведения или остановки">
+        <video id="video" playsinline webkit-playsinline preload="metadata"></video>
+        <div class="placeholder" id="placeholder"><div class="glyph">♫</div><strong>SoundLoop</strong><small>Добавь видео и музыку ниже</small></div>
+        <button class="play-overlay" id="playBtn" type="button" aria-label="Воспроизвести" disabled>▶</button>
+      </div>
+      <div class="title" id="trackTitle">Новая музыкальная анимация</div>
+    </section>
+
+    <details id="editor">
+      <summary>Добавить свои материалы · предпросмотр</summary>
+      <div class="form">
+        <div class="field"><label for="titleInput">Название композиции</label><input id="titleInput" type="text" maxlength="80" placeholder="Например, Dreams in the Forest"></div>
+        <div class="field"><label for="videoFile">Видео MP4 / WebM</label><input id="videoFile" type="file" accept="video/mp4,video/webm,video/*"><input id="videoUrl" type="url" placeholder="Или прямая HTTPS-ссылка на видео"></div>
+        <div class="field"><label for="audioFile">Отдельная музыка (необязательно)</label><input id="audioFile" type="file" accept="audio/*"><input id="audioUrl" type="url" placeholder="Или прямая HTTPS-ссылка на аудио"></div>
+        <p class="hint">Локальные файлы доступны только в твоём предпросмотре. Для публикации материалы должны быть доступны по публичным HTTPS-ссылкам.</p>
+        <div class="actions"><button class="secondary" id="loadBtn" type="button">Загрузить предпросмотр</button><button class="secondary" id="resetBtn" type="button">Сбросить</button></div>
+        <div class="status" id="status" role="status"></div>
+      </div>
+    </details>
+  </main>
+</div>
+<script>
+(() => {
+  const tg = window.Telegram?.WebApp;
+  try { tg?.ready(); } catch(e) {}
+  // Не вызываем tg.expand(): компактный режим должен оставаться компактным.
+  const $ = id => document.getElementById(id);
+  const video = $('video'), screen = $('screen'), playBtn = $('playBtn');
+  const audio = new Audio(); audio.preload='auto'; audio.loop=false;
+  video.loop=true; video.playsInline=true; video.preload='auto';
+  let videoObjectUrl=null,audioObjectUrl=null,hasSeparateAudio=false,ready=false,isPlaying=false,syncing=false;
+  const setStatus = msg => $('status').textContent=msg;
+  const setTitle = value => $('trackTitle').textContent=value.trim()||'Новая музыкальная анимация';
+  function releaseUrls(){if(videoObjectUrl){URL.revokeObjectURL(videoObjectUrl);videoObjectUrl=null;}if(audioObjectUrl){URL.revokeObjectURL(audioObjectUrl);audioObjectUrl=null;}}
+  function showPlay(){playBtn.classList.remove('hidden');playBtn.textContent='▶';playBtn.setAttribute('aria-label','Воспроизвести');}
+  function hidePlay(){playBtn.classList.add('hidden');playBtn.setAttribute('aria-label','Остановить');}
+  function seekToStart(el){
+    return new Promise((resolve,reject)=>{
+      if(!Number.isFinite(el.duration)){resolve();return;}
+      if(el.currentTime===0&&!el.seeking){resolve();return;}
+      let settled=false;
+      const finish=()=>{if(settled)return;settled=true;cleanup();resolve();};
+      const fail=()=>{if(settled)return;settled=true;cleanup();reject(new Error('seek failed'));};
+      const cleanup=()=>{el.removeEventListener('seeked',finish);el.removeEventListener('error',fail);clearTimeout(timer);};
+      el.addEventListener('seeked',finish,{once:true});el.addEventListener('error',fail,{once:true});
+      const timer=setTimeout(finish,1500);
+      try{el.currentTime=0;if(!el.seeking&&el.currentTime===0)finish();}catch(e){finish();}
+    });
+  }
+  async function stopAll(){
+    isPlaying=false;syncing=true;video.pause();audio.pause();
+    try{await Promise.all([seekToStart(video),seekToStart(audio)]);}catch(e){}
+    syncing=false;showPlay();
+  }
+  async function startAll(fromBeginning=true){
+    if(!ready)return;
+    try{
+      syncing=true;
+      if(fromBeginning){await Promise.all([seekToStart(video),hasSeparateAudio?seekToStart(audio):Promise.resolve()]);}
+      if(hasSeparateAudio){video.muted=true;}
+      else{video.muted=false;}
+      isPlaying=true;
+      if(hasSeparateAudio)await Promise.all([video.play(),audio.play()]);
+      else await video.play();
+      syncing=false;hidePlay();setStatus('');
+    }catch(err){isPlaying=false;syncing=false;video.pause();audio.pause();showPlay();setStatus('Не удалось запустить медиа. Проверь формат и ссылку.');}
+  }
+  function configureLoopMode(){
+    if(!hasSeparateAudio){
+      video.loop=true;
+      audio.loop=false;
+      return;
+    }
+    // Более короткий файл повторяется внутри цикла более длинного.
+    // Более длинный файл завершает общий цикл и запускает оба медиа сначала.
+    if(video.duration <= audio.duration){
+      video.loop=true;
+      audio.loop=false;
+    }else{
+      video.loop=false;
+      audio.loop=true;
+    }
+  }
+  async function restartCombinedCycle(){
+    if(!hasSeparateAudio || !isPlaying || syncing)return;
+    syncing=true;
+    video.pause();
+    audio.pause();
+    try{
+      await Promise.all([seekToStart(video),seekToStart(audio)]);
+      if(!isPlaying){syncing=false;return;}
+      await Promise.all([video.play(),audio.play()]);
+      syncing=false;
+    }catch(err){
+      isPlaying=false;
+      syncing=false;
+      video.pause();
+      audio.pause();
+      showPlay();
+      setStatus('Не удалось продолжить повтор. Нажми Play.');
+    }
+  }
+  function togglePlayback(){if(!ready)return;if(isPlaying)stopAll();else startAll(true);}
+  playBtn.addEventListener('click',e=>{e.stopPropagation();togglePlayback();});
+  screen.addEventListener('click',e=>{if(e.target===playBtn)return;togglePlayback();});
+  $('loadBtn').addEventListener('click',async()=>{
+    await stopAll();ready=false;releaseUrls();screen.classList.remove('has-media');playBtn.disabled=true;
+    const vf=$('videoFile').files[0],af=$('audioFile').files[0],vurl=$('videoUrl').value.trim(),aurl=$('audioUrl').value.trim();
+    if(!vf&&!vurl){setStatus('Добавь видеофайл или прямую ссылку.');return;}
+    const validUrl=s=>{try{const u=new URL(s);return u.protocol==='https:'||u.protocol==='http:';}catch(e){return false;}};
+    if(!vf&&!validUrl(vurl)){setStatus('Нужна прямая HTTP(S)-ссылка на видеофайл.');return;}
+    if(!af&&aurl&&!validUrl(aurl)){setStatus('Проверь ссылку на аудио.');return;}
+    video.src=vf?(videoObjectUrl=URL.createObjectURL(vf)):vurl;
+    hasSeparateAudio=!!(af||aurl);video.muted=hasSeparateAudio;
+    if(hasSeparateAudio)audio.src=af?(audioObjectUrl=URL.createObjectURL(af)):aurl;else{audio.removeAttribute('src');audio.load();}
+    setTitle($('titleInput').value);setStatus('Загружаю…');
+    const waitMeta=el=>new Promise((resolve,reject)=>{if(el.readyState>=1&&Number.isFinite(el.duration)){resolve();return;}const clean=()=>{el.removeEventListener('loadedmetadata',ok);el.removeEventListener('error',bad);};const ok=()=>{clean();resolve();};const bad=()=>{clean();reject(new Error('media'));};el.addEventListener('loadedmetadata',ok,{once:true});el.addEventListener('error',bad,{once:true});});
+    try{
+      await waitMeta(video);if(hasSeparateAudio)await waitMeta(audio);
+      configureLoopMode();
+      ready=true;screen.classList.add('has-media');playBtn.disabled=false;showPlay();
+      setStatus(hasSeparateAudio?'Готово. Короткий файл повторяется; когда заканчивается длинный, оба начинают новый цикл.':'Готово. Нажми на видео для запуска.');
+    }catch(e){ready=false;playBtn.disabled=true;setStatus('Не удалось прочитать файл. Попробуй MP4 (H.264) и MP3/AAC.');}
+  });
+  $('resetBtn').addEventListener('click',async()=>{
+    await stopAll();ready=false;releaseUrls();video.removeAttribute('src');video.load();audio.removeAttribute('src');audio.load();screen.classList.remove('has-media');playBtn.disabled=true;showPlay();
+    $('videoFile').value='';$('audioFile').value='';$('videoUrl').value='';$('audioUrl').value='';$('titleInput').value='';setTitle('');setStatus('');
+  });
+
+  // Конец более длинного файла завершает общий цикл.
+  // Более короткий файл имеет loop=true и повторяется до этого момента.
+  audio.addEventListener('ended', restartCombinedCycle);
+  video.addEventListener('ended', restartCombinedCycle);
+  video.addEventListener('pause',()=>{
+    if(hasSeparateAudio&&isPlaying&&!syncing){isPlaying=false;audio.pause();showPlay();}
+  });
+  $('titleInput').addEventListener('input',e=>setTitle(e.target.value));
+  document.addEventListener('visibilitychange',()=>{if(document.hidden)stopAll();});
+
+  // Загружаем публикацию по параметрам URL или startapp-параметру Telegram.
+  function decodePayload(raw){
+    if(!raw)return null;
+    try{return JSON.parse(raw);}catch(e){}
+    try{const normalized=raw.replace(/-/g,'+').replace(/_/g,'/');const padded=normalized+'='.repeat((4-normalized.length%4)%4);const bytes=Uint8Array.from(atob(padded),c=>c.charCodeAt(0));return JSON.parse(new TextDecoder().decode(bytes));}catch(e){return null;}
+  }
+  const query=new URLSearchParams(location.search);
+  let payload={video:query.get('video'),audio:query.get('audio'),title:query.get('title')};
+  const startParam=tg?.initDataUnsafe?.start_param;
+  const startPayload=decodePayload(startParam);
+  if(startPayload&&typeof startPayload==='object')payload={...payload,...startPayload};
+  if(payload.video){
+    $('videoUrl').value=payload.video;
+    if(payload.audio)$('audioUrl').value=payload.audio;
+    if(payload.title){$('titleInput').value=payload.title;setTitle(payload.title);}
+    $('editor').hidden=true;
+    $('loadBtn').click();
+  }
+})();
+</script>
+</body>
+</html>
