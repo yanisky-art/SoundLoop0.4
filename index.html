@@ -56,13 +56,15 @@
     </section>
 
     <details id="editor">
-      <summary>Добавить свои материалы · предпросмотр</summary>
+      <summary>Панель автора · предпросмотр и публикация</summary>
       <div class="form">
         <div class="field"><label for="titleInput">Название композиции</label><input id="titleInput" type="text" maxlength="80" placeholder="Например, Dreams in the Forest"></div>
-        <div class="field"><label for="videoFile">Видео MP4 / WebM</label><input id="videoFile" type="file" accept="video/mp4,video/webm,video/*"><input id="videoUrl" type="url" placeholder="Или прямая HTTPS-ссылка на видео"></div>
-        <div class="field"><label for="audioFile">Отдельная музыка (необязательно)</label><input id="audioFile" type="file" accept="audio/*"><input id="audioUrl" type="url" placeholder="Или прямая HTTPS-ссылка на аудио"></div>
-        <p class="hint">Локальные файлы доступны только в твоём предпросмотре. Для публикации материалы должны быть доступны по публичным HTTPS-ссылкам.</p>
-        <div class="actions"><button class="secondary" id="loadBtn" type="button">Загрузить предпросмотр</button><button class="secondary" id="resetBtn" type="button">Сбросить</button></div>
+        <div class="field"><label for="videoFile">Видео MP4 / WebM</label><input id="videoFile" type="file" accept="video/mp4,video/webm,video/*"><input id="videoUrl" type="url" placeholder="Или ссылка Google Drive на видео"></div>
+        <div class="field"><label for="audioFile">Отдельная музыка (необязательно)</label><input id="audioFile" type="file" accept="audio/*"><input id="audioUrl" type="url" placeholder="Или ссылка Google Drive на аудио"></div>
+        <p class="hint">Для публикации вставь ссылки Google Drive. У каждого файла должен быть доступ «Все, у кого есть ссылка». Локальные файлы годятся только для предпросмотра.</p>
+        <div class="field"><label for="botUsername">Имя Telegram-бота (без @)</label><input id="botUsername" type="text" autocomplete="off" placeholder="Например, SoundLoopBot"></div>
+        <div class="actions"><button class="secondary" id="loadBtn" type="button">Загрузить предпросмотр</button><button class="secondary" id="makeLinkBtn" type="button">Создать ссылку публикации</button><button class="secondary" id="resetBtn" type="button">Сбросить</button></div>
+        <div class="field" id="shareField" hidden><label for="shareLink">Ссылка для Telegram</label><input id="shareLink" type="text" readonly><button class="secondary" id="copyLinkBtn" type="button">Скопировать ссылку</button><p class="hint">Ссылка открывает эту композицию в твоём Mini App. Если ссылка слишком длинная или бот ещё не настроен как Mini App, проверь настройки BotFather.</p></div>
         <div class="status" id="status" role="status"></div>
       </div>
     </details>
@@ -157,11 +159,27 @@
     const vf=$('videoFile').files[0],af=$('audioFile').files[0],vurl=$('videoUrl').value.trim(),aurl=$('audioUrl').value.trim();
     if(!vf&&!vurl){setStatus('Добавь видеофайл или прямую ссылку.');return;}
     const validUrl=s=>{try{const u=new URL(s);return u.protocol==='https:'||u.protocol==='http:';}catch(e){return false;}};
-    if(!vf&&!validUrl(vurl)){setStatus('Нужна прямая HTTP(S)-ссылка на видеофайл.');return;}
+    const driveFileId = raw => {
+      if(!raw) return null;
+      try {
+        const u = new URL(raw);
+        if(!/drive\.google\.com$/.test(u.hostname) && !/docs\.google\.com$/.test(u.hostname)) return null;
+        let m = u.pathname.match(/\/file\/d\/([a-zA-Z0-9_-]+)/);
+        if(m) return m[1];
+        const id = u.searchParams.get('id');
+        if(id) return id;
+      } catch(e) {}
+      return null;
+    };
+    const mediaUrl = raw => {
+      const id = driveFileId(raw);
+      return id ? `https://drive.google.com/uc?export=download&id=${encodeURIComponent(id)}` : raw;
+    };
+    if(!vf&&!validUrl(vurl)){setStatus('Вставь ссылку Google Drive или прямую HTTP(S)-ссылку на видео.');return;}
     if(!af&&aurl&&!validUrl(aurl)){setStatus('Проверь ссылку на аудио.');return;}
-    video.src=vf?(videoObjectUrl=URL.createObjectURL(vf)):vurl;
+    video.src=vf?(videoObjectUrl=URL.createObjectURL(vf)):mediaUrl(vurl);
     hasSeparateAudio=!!(af||aurl);video.muted=hasSeparateAudio;
-    if(hasSeparateAudio)audio.src=af?(audioObjectUrl=URL.createObjectURL(af)):aurl;else{audio.removeAttribute('src');audio.load();}
+    if(hasSeparateAudio)audio.src=af?(audioObjectUrl=URL.createObjectURL(af)):mediaUrl(aurl);else{audio.removeAttribute('src');audio.load();}
     setTitle($('titleInput').value);setStatus('Загружаю…');
     const waitMeta=el=>new Promise((resolve,reject)=>{if(el.readyState>=1&&Number.isFinite(el.duration)){resolve();return;}const clean=()=>{el.removeEventListener('loadedmetadata',ok);el.removeEventListener('error',bad);};const ok=()=>{clean();resolve();};const bad=()=>{clean();reject(new Error('media'));};el.addEventListener('loadedmetadata',ok,{once:true});el.addEventListener('error',bad,{once:true});});
     try{
@@ -183,6 +201,46 @@
   video.addEventListener('pause',()=>{
     if(hasSeparateAudio&&isPlaying&&!syncing){isPlaying=false;audio.pause();showPlay();}
   });
+
+  function extractDriveId(raw){
+    if(!raw) return null;
+    try{
+      const u=new URL(raw);
+      if(!/drive\.google\.com$/.test(u.hostname)&&!/docs\.google\.com$/.test(u.hostname))return null;
+      const m=u.pathname.match(/\/file\/d\/([a-zA-Z0-9_-]+)/);
+      return m?m[1]:(u.searchParams.get('id')||null);
+    }catch(e){return null;}
+  }
+  function toBase64Url(text){
+    const bytes=new TextEncoder().encode(text);
+    let binary='';bytes.forEach(b=>binary+=String.fromCharCode(b));
+    return btoa(binary).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
+  }
+  $('makeLinkBtn').addEventListener('click',()=>{
+    const title=$('titleInput').value.trim()||'Новая музыкальная анимация';
+    const videoRaw=$('videoUrl').value.trim();
+    const audioRaw=$('audioUrl').value.trim();
+    const bot=$('botUsername').value.trim().replace(/^@/,'');
+    if(!bot){setStatus('Введи имя Telegram-бота без @.');return;}
+    if(!videoRaw){setStatus('Вставь ссылку Google Drive на видео.');return;}
+    const videoId=extractDriveId(videoRaw),audioId=audioRaw?extractDriveId(audioRaw):null;
+    if(!videoId){setStatus('Для создания короткой Telegram-ссылки нужна ссылка Google Drive на видео.');return;}
+    if(audioRaw&&!audioId){setStatus('Для отдельной музыки нужна ссылка Google Drive на аудиофайл.');return;}
+    const payload={v:videoId,t:title};
+    if(audioId)payload.a=audioId;
+    const encoded=toBase64Url(JSON.stringify(payload));
+    if(encoded.length>512){setStatus('Данные композиции превышают лимит Telegram startapp. Сократи название.');return;}
+    const link=`https://t.me/${bot}?startapp=${encoded}&mode=compact`;
+    $('shareLink').value=link;
+    $('shareField').hidden=false;
+    setStatus('Ссылка создана. Сначала проверь её в Telegram.');
+  });
+  $('copyLinkBtn').addEventListener('click',async()=>{
+    const value=$('shareLink').value;
+    try{await navigator.clipboard.writeText(value);setStatus('Ссылка скопирована.');}
+    catch(e){$('shareLink').focus();$('shareLink').select();setStatus('Выделил ссылку. Скопируй её вручную.');}
+  });
+
   $('titleInput').addEventListener('input',e=>setTitle(e.target.value));
   document.addEventListener('visibilitychange',()=>{if(document.hidden)stopAll();});
 
@@ -196,7 +254,12 @@
   let payload={video:query.get('video'),audio:query.get('audio'),title:query.get('title')};
   const startParam=tg?.initDataUnsafe?.start_param;
   const startPayload=decodePayload(startParam);
-  if(startPayload&&typeof startPayload==='object')payload={...payload,...startPayload};
+  if(startPayload&&typeof startPayload==='object'){
+    payload={...payload,...startPayload};
+    if(startPayload.v)payload.video=`https://drive.google.com/uc?export=download&id=${encodeURIComponent(startPayload.v)}`;
+    if(startPayload.a)payload.audio=`https://drive.google.com/uc?export=download&id=${encodeURIComponent(startPayload.a)}`;
+    if(startPayload.t)payload.title=startPayload.t;
+  }
   if(payload.video){
     $('videoUrl').value=payload.video;
     if(payload.audio)$('audioUrl').value=payload.audio;
